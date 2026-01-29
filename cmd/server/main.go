@@ -2,7 +2,7 @@ package main
 
 import (
 	"log"
-	"github.com/Jorgee97/http/tcp"
+	"github.com/Jorgee97/http/internal/tcp"
 )
 
 func main() {
