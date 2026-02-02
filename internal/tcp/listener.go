@@ -6,8 +6,13 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"strings"
 )
+
+type Request struct {
+	startLine []byte
+	headers []byte
+	body []byte
+}
 
 func Listen(port int) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -38,6 +43,9 @@ func handleConnection(c net.Conn) {
 		contentLength  int
 		bodyStartIndex int
 	)
+	request := Request{
+		startLine: nil,
+	}
 
 	for {
 		tb := make([]byte, 1024)
@@ -49,20 +57,28 @@ func handleConnection(c net.Conn) {
 		buf = append(buf, tb[:n]...)
 
 		if !headerParsed {
-			if i := bytes.Index(buf, []byte("\r\n\r\n")); i != -1 {
+			headerEnd := bytes.Index(buf, []byte("\r\n\r\n"))
+			if headerEnd != -1 {
 				headerParsed = true
-				bodyStartIndex = i + 4
+				bodyStartIndex = headerEnd + 4
 
-				headerPart := string(buf[:i])
-				lines := strings.Split(headerPart, "\r\n")
+				startLineEnd := bytes.Index(buf[:headerEnd], []byte("\r\n"))
+				if startLineEnd == -1 {
+					// TODO: if this even happend this request my be broken
+					c.Write([]byte("HTTP/1.1 400 Bad Request\r\nServer: MeServer"))
+					c.Close()
+					continue
+				}
+				request.startLine = buf[:startLineEnd]
 
-				// lines[0] is the startLine
-				// Then comes the headers part of the request
-				// I guess we can or want to do this part without using strings
-				for _, l := range lines[1:] {
-					parts := strings.SplitN(l, ":", 2)
-					if len(parts) == 2 && strings.TrimSpace(parts[0]) == "Content-Length" {
-						contentLength, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+				headerPart := buf[startLineEnd+2:headerEnd]
+				request.headers = headerPart
+				for _, l := range bytes.Split(headerPart, []byte("\r\n")) {
+					line := bytes.SplitN(l, []byte(":"), 2)
+					k, v := line[0], line[1]
+
+					if  bytes.Equal(k, []byte("Content-Length")) {
+						contentLength, _ = strconv.Atoi(string(bytes.TrimSpace(v)))
 					}
 				}
 			}
@@ -78,10 +94,10 @@ func handleConnection(c net.Conn) {
 		}
 	}
 
-	headerEnd := bodyStartIndex - 4
-	headerText := string(buf[:headerEnd])
-	body := buf[bodyStartIndex : bodyStartIndex+contentLength]
+	request.body = buf[bodyStartIndex : bodyStartIndex+contentLength]
 
-	fmt.Println("Headers: ", headerText)
-	fmt.Println("Body: ", body)
+	fmt.Println("Request: ", string(request.startLine))
+	fmt.Println("Headers: ", string(request.headers))
+	fmt.Println("Body: ", string(request.body))
+
 }
