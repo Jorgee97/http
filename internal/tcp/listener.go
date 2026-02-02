@@ -73,8 +73,10 @@ func handleRequest(c net.Conn) bool {
 		startLine: StartLine{},
 	}
 
+	shouldClose := false
+
 	for {
-		tb := make([]byte, 1024)
+		tb := make([]byte, maxHeaderSize)
 		n, err := c.Read(tb)
 		if err != nil {
 			log.Println(err)
@@ -84,7 +86,7 @@ func handleRequest(c net.Conn) bool {
 		buf = append(buf, tb[:n]...)
 
 		if !headerParsed && len(buf) > maxHeaderSize {
-			_ = writeResponse(c, 431, "Request Header Fields Too Large", nil)
+			_ = writeResponse(c, 431, "Request Header Fields Too Large", true, nil)
 			return true
 		}
 
@@ -96,22 +98,26 @@ func handleRequest(c net.Conn) bool {
 
 				startLineEnd := bytes.Index(buf[:headerEnd], []byte("\r\n"))
 				if startLineEnd == -1 {
-					_ = writeResponse(c, 400, "Bad Request", nil)
+					_ = writeResponse(c, 400, "Bad Request", true, nil)
 					return true
 				}
 				sl, err := extractRequestStartLine(buf[:startLineEnd])
 				if err != nil {
-					_ = writeResponse(c, 400, "Bad Request", nil)
+					_ = writeResponse(c, 400, "Bad Request", true, nil)
 					return true
 				}
 				request.startLine = sl
+
+				if request.startLine.Protocol == "HTTP/1.0" {
+					shouldClose = true
+				}
 
 				headerPart := buf[startLineEnd+2 : headerEnd]
 				request.headers = headerPart
 				for _, l := range bytes.Split(headerPart, []byte("\r\n")) {
 					line := bytes.SplitN(l, []byte(":"), 2)
 					if len(line) != 2 {
-						_ = writeResponse(c, 400, "Bad Request", nil)
+						_ = writeResponse(c, 400, "Bad Request", true, nil)
 						return true
 					}
 					k, v := bytes.TrimSpace(line[0]), bytes.TrimSpace(line[1])
@@ -120,8 +126,15 @@ func handleRequest(c net.Conn) bool {
 						contentLength, _ = strconv.Atoi(string(bytes.TrimSpace(v)))
 					}
 
-					if bytes.EqualFold(k, []byte("Connection")) && bytes.EqualFold(v, []byte("close")) {
-						return true
+					if bytes.EqualFold(k, []byte("Connection")) {
+						if bytes.EqualFold(v, []byte("close")) {
+							shouldClose = true
+						}
+
+						if request.startLine.Protocol == "HTTP/1.0" && bytes.EqualFold(v, []byte("keep-alive")) {
+							shouldClose = false
+						}
+
 					}
 				}
 			}
@@ -144,13 +157,9 @@ func handleRequest(c net.Conn) bool {
 	fmt.Println("Headers: ", string(request.headers))
 	fmt.Println("Body: ", string(request.body))
 
-	_ = writeResponse(c, 200, "OK", []byte("Hello from MeServer\n"))
+	_ = writeResponse(c, 200, "OK", shouldClose, []byte("Hello from MeServer\n"))
 
-	if request.startLine.Protocol == "HTTP/1.0" {
-		return true
-	}
-
-	return false
+	return shouldClose
 
 }
 
@@ -166,14 +175,18 @@ func extractRequestStartLine(sl []byte) (StartLine, error) {
 	}, nil
 }
 
-func writeResponse(c net.Conn, statusCode int, statusText string, body []byte) error {
+func writeResponse(c net.Conn, statusCode int, statusText string, closeCon bool, body []byte) error {
 	if body == nil {
 		body = make([]byte, 0)
 	}
 
 	w := bufio.NewWriter(c)
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", statusCode, statusText)
-	w.WriteString("Connection: keep-alive\r\n")
+	if closeCon {
+		w.WriteString("Connection: close\r\n")
+	} else {
+		w.WriteString("Connection: keep-alive\r\n")
+	}
 	fmt.Fprintf(w, "Content-Length: %d\r\n", len(body))
 	w.WriteString("\r\n")
 
