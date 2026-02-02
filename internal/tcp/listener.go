@@ -51,17 +51,19 @@ func Listen(port int) error {
 func handleConnection(c net.Conn) {
 	defer c.Close()
 
+	buf := []byte{}
 	closeCon := false
-
-	for closeCon == false {
-		closeCon = handleRequest(c)
+	for  {
+		closeCon, buf = handleRequest(c, buf)
+		if closeCon {
+			return
+		}
 	}
 
 }
 
 // Return true represents that we need to close the connection
-func handleRequest(c net.Conn) bool {
-	var buf []byte
+func handleRequest(c net.Conn, buf []byte) (bool, []byte) {
 
 	// Minimal state machine
 	var (
@@ -80,14 +82,14 @@ func handleRequest(c net.Conn) bool {
 		n, err := c.Read(tb)
 		if err != nil {
 			log.Println(err)
-			return true
+			return true, buf
 		}
 
 		buf = append(buf, tb[:n]...)
 
 		if !headerParsed && len(buf) > maxHeaderSize {
 			_ = writeResponse(c, 431, "Request Header Fields Too Large", true, nil)
-			return true
+			return true, buf
 		}
 
 		if !headerParsed {
@@ -99,12 +101,12 @@ func handleRequest(c net.Conn) bool {
 				startLineEnd := bytes.Index(buf[:headerEnd], []byte("\r\n"))
 				if startLineEnd == -1 {
 					_ = writeResponse(c, 400, "Bad Request", true, nil)
-					return true
+					return true, buf
 				}
 				sl, err := extractRequestStartLine(buf[:startLineEnd])
 				if err != nil {
 					_ = writeResponse(c, 400, "Bad Request", true, nil)
-					return true
+					return true, buf
 				}
 				request.startLine = sl
 
@@ -118,7 +120,7 @@ func handleRequest(c net.Conn) bool {
 					line := bytes.SplitN(l, []byte(":"), 2)
 					if len(line) != 2 {
 						_ = writeResponse(c, 400, "Bad Request", true, nil)
-						return true
+						return true, buf
 					}
 					k, v := bytes.TrimSpace(line[0]), bytes.TrimSpace(line[1])
 
@@ -159,7 +161,7 @@ func handleRequest(c net.Conn) bool {
 
 	_ = writeResponse(c, 200, "OK", shouldClose, []byte("Hello from MeServer\n"))
 
-	return shouldClose
+	return shouldClose, buf
 
 }
 
